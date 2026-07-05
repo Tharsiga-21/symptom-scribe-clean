@@ -25,6 +25,9 @@ import {
   CheckCircle2,
   ChevronRight,
   Star,
+  Gauge,
+  MousePointerClick,
+  Repeat,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
@@ -93,6 +96,26 @@ const games = [
     iconColor: "text-orange-500",
     gradient: "from-orange-500 to-red-500",
     shadow: "shadow-orange-500/20",
+  },
+  {
+    id: "reaction",
+    name: "Quick Reaction",
+    icon: Gauge,
+    description: "Test your reflexes — click the moment the screen turns green",
+    color: "from-rose-500/20 to-red-500/20",
+    iconColor: "text-rose-500",
+    gradient: "from-rose-500 to-red-500",
+    shadow: "shadow-rose-500/20",
+  },
+  {
+    id: "simon",
+    name: "Simon Says",
+    icon: Repeat,
+    description: "Watch the color sequence, then repeat it back from memory",
+    color: "from-indigo-500/20 to-violet-500/20",
+    iconColor: "text-indigo-500",
+    gradient: "from-indigo-500 to-violet-500",
+    shadow: "shadow-indigo-500/20",
   },
 ];
 
@@ -164,6 +187,29 @@ const BrainGames = () => {
   const XP_PER_QUESTION = 10;
   const XP_PER_LEVEL = 100;
 
+  // Reaction Test Game States
+  const [reactionState, setReactionState] = useState<
+    "idle" | "waiting" | "ready" | "tooEarly" | "results"
+  >("idle");
+  const [reactionRound, setReactionRound] = useState(0);
+  const [reactionTimes, setReactionTimes] = useState<number[]>([]);
+  const reactionStartRef = useRef<number>(0);
+  const reactionTimeoutRef = useRef<number | null>(null);
+  const REACTION_ROUNDS = 5;
+
+  // Simon Says Game States
+  const [simonSequence, setSimonSequence] = useState<number[]>([]);
+  const [playerSequence, setPlayerSequence] = useState<number[]>([]);
+  const [simonState, setSimonState] = useState<"idle" | "showing" | "input" | "gameover">("idle");
+  const [simonActiveIndex, setSimonActiveIndex] = useState<number | null>(null);
+  const simonTimeoutRef = useRef<number | null>(null);
+  const SIMON_COLORS = [
+    { bg: "bg-red-500", active: "bg-red-300", label: "Red" },
+    { bg: "bg-blue-500", active: "bg-blue-300", label: "Blue" },
+    { bg: "bg-green-500", active: "bg-green-300", label: "Green" },
+    { bg: "bg-yellow-500", active: "bg-yellow-300", label: "Yellow" },
+  ];
+
   // Calculate level dynamically from XP
   const level = Math.floor(xp / XP_PER_LEVEL) + 1;
   const prevLevelRef = useRef(level);
@@ -207,7 +253,7 @@ const BrainGames = () => {
       const { error } = await supabase.rpc("award_user_xp", {
         points_to_add: pointsToGain,
       });
-      
+
       if (error) {
         // Handle rate limiting exceptions explicitly
         const isRateLimit = error.message?.includes("Rate limit") || error.details?.includes("Rate limit");
@@ -375,13 +421,41 @@ const BrainGames = () => {
     };
   }, [activeGame]);
 
+  // Cleanup timeout when leaving Reaction game or unmounting
+  useEffect(() => {
+    if (activeGame !== "reaction" && reactionTimeoutRef.current) {
+      clearTimeout(reactionTimeoutRef.current);
+      reactionTimeoutRef.current = null;
+    }
+    return () => {
+      if (reactionTimeoutRef.current) {
+        clearTimeout(reactionTimeoutRef.current);
+      }
+    };
+  }, [activeGame]);
+
+  // Cleanup timeout when leaving Simon Says or unmounting
+  useEffect(() => {
+    if (activeGame !== "simon" && simonTimeoutRef.current) {
+      clearTimeout(simonTimeoutRef.current);
+      simonTimeoutRef.current = null;
+    }
+    return () => {
+      if (simonTimeoutRef.current) {
+        clearTimeout(simonTimeoutRef.current);
+      }
+    };
+  }, [activeGame]);
+
   // Synchronize game active state with window and history hash for route protection
   useEffect(() => {
     const isGameActive = !!(
       (activeGame === "memory" && memoryCards.length > 0 && !memoryGameWon) ||
       (activeGame === "math") ||
       (activeGame === "word" && wordSequence.length > 0) ||
-      (activeGame === "pattern" && currentQuestion !== null && !gameCompleted)
+      (activeGame === "pattern" && currentQuestion !== null && !gameCompleted) ||
+      (activeGame === "reaction" && reactionState !== "idle" && reactionState !== "results") ||
+      (activeGame === "simon" && simonSequence.length > 0 && simonState !== "gameover")
     );
 
     window.isGameActive = isGameActive;
@@ -427,7 +501,17 @@ const BrainGames = () => {
       window.removeEventListener("popstate", handlePopState);
       window.isGameActive = false;
     };
-  }, [activeGame, memoryCards.length, memoryGameWon, wordSequence.length, currentQuestion, gameCompleted]);
+  }, [
+    activeGame,
+    memoryCards.length,
+    memoryGameWon,
+    wordSequence.length,
+    currentQuestion,
+    gameCompleted,
+    reactionState,
+    simonSequence.length,
+    simonState,
+  ]);
 
   // ─── Pattern Recognition Game ──────────────────────────────────────────────
 
@@ -943,6 +1027,149 @@ const BrainGames = () => {
     }
   };
 
+  // ─── Reaction Test Game ────────────────────────────────────────────────────
+
+  const scheduleReactionRound = () => {
+    setReactionState("waiting");
+    const delay = Math.floor(Math.random() * 2500) + 1500; // 1.5s–4s
+    reactionTimeoutRef.current = window.setTimeout(() => {
+      reactionStartRef.current = Date.now();
+      setReactionState("ready");
+    }, delay);
+  };
+
+  const startReactionGame = () => {
+    setReactionRound(0);
+    setReactionTimes([]);
+    setActiveGame("reaction");
+    showInfo("Reaction Test Started!", "Wait for green, then click as fast as you can");
+    scheduleReactionRound();
+  };
+
+  const handleReactionZoneClick = () => {
+    if (reactionState === "waiting") {
+      // Clicked too early
+      if (reactionTimeoutRef.current) clearTimeout(reactionTimeoutRef.current);
+      setReactionState("tooEarly");
+      showError("Too Soon!", "Wait for the green signal before clicking");
+      return;
+    }
+
+    if (reactionState === "ready") {
+      const elapsed = Date.now() - reactionStartRef.current;
+      const newTimes = [...reactionTimes, elapsed];
+      setReactionTimes(newTimes);
+      const newRound = reactionRound + 1;
+      setReactionRound(newRound);
+
+      if (newRound >= REACTION_ROUNDS) {
+        const avg = Math.round(newTimes.reduce((a, b) => a + b, 0) / newTimes.length);
+        let reactionXp = 10;
+        if (avg < 250) reactionXp = 40;
+        else if (avg < 350) reactionXp = 30;
+        else if (avg < 450) reactionXp = 20;
+
+        awardXp(reactionXp);
+        setReactionState("results");
+
+        if (avg < 250) {
+          triggerConfetti();
+          showSuccess("⚡ LIGHTNING FAST!", `Avg: ${avg}ms (+${reactionXp} XP)`);
+        } else {
+          showSuccess("Test Complete!", `Avg: ${avg}ms (+${reactionXp} XP)`);
+        }
+      } else {
+        showSuccess(`✓ ${elapsed}ms`, `Round ${newRound}/${REACTION_ROUNDS} complete`);
+        scheduleReactionRound();
+      }
+    }
+
+    if (reactionState === "tooEarly") {
+      scheduleReactionRound();
+    }
+  };
+
+  const resetReactionGame = () => {
+    if (reactionTimeoutRef.current) clearTimeout(reactionTimeoutRef.current);
+    setReactionRound(0);
+    setReactionTimes([]);
+    setReactionState("idle");
+    scheduleReactionRound();
+    showInfo("Game Restarted", "Try to beat your previous average!");
+  };
+
+  // ─── Simon Says Game ────────────────────────────────────────────────────────
+
+  const playSimonSequence = (sequence: number[]) => {
+    setSimonState("showing");
+    setPlayerSequence([]);
+    sequence.forEach((colorIndex, i) => {
+      simonTimeoutRef.current = window.setTimeout(() => {
+        setSimonActiveIndex(colorIndex);
+        window.setTimeout(() => setSimonActiveIndex(null), 400);
+      }, i * 800);
+    });
+
+    simonTimeoutRef.current = window.setTimeout(
+      () => {
+        setSimonActiveIndex(null);
+        setSimonState("input");
+      },
+      sequence.length * 800 + 200
+    );
+  };
+
+  const startSimonGame = () => {
+    const firstColor = Math.floor(Math.random() * 4);
+    setSimonSequence([firstColor]);
+    setPlayerSequence([]);
+    setSimonState("idle");
+    setActiveGame("simon");
+    showInfo("Simon Says Started!", "Watch the sequence carefully...");
+    window.setTimeout(() => playSimonSequence([firstColor]), 600);
+  };
+
+  const handleSimonColorClick = (colorIndex: number) => {
+    if (simonState !== "input") return;
+
+    const newPlayerSequence = [...playerSequence, colorIndex];
+    const stepIndex = newPlayerSequence.length - 1;
+
+    if (simonSequence[stepIndex] !== colorIndex) {
+      setSimonState("gameover");
+      const finalRound = simonSequence.length;
+      let simonXp = 5;
+      if (finalRound >= 10) simonXp = 40;
+      else if (finalRound >= 7) simonXp = 30;
+      else if (finalRound >= 4) simonXp = 15;
+      awardXp(simonXp);
+      showError("✗ Wrong sequence!", `You reached round ${finalRound}. (+${simonXp} XP)`);
+      return;
+    }
+
+    setPlayerSequence(newPlayerSequence);
+
+    if (newPlayerSequence.length === simonSequence.length) {
+      showSuccess(`✓ Round ${simonSequence.length} complete!`, "Get ready for the next one...");
+      const nextSequence = [...simonSequence, Math.floor(Math.random() * 4)];
+      simonTimeoutRef.current = window.setTimeout(() => {
+        setSimonSequence(nextSequence);
+        playSimonSequence(nextSequence);
+      }, 1000);
+    }
+  };
+
+  const resetSimonGame = () => {
+    if (simonTimeoutRef.current) clearTimeout(simonTimeoutRef.current);
+    const firstColor = Math.floor(Math.random() * 4);
+    setSimonSequence([firstColor]);
+    setPlayerSequence([]);
+    setSimonState("idle");
+    setSimonActiveIndex(null);
+    showInfo("Game Restarted", "Try to beat your previous round!");
+    window.setTimeout(() => playSimonSequence([firstColor]), 600);
+  };
+
   // ─── Pattern game renderer ─────────────────────────────────────────────────
 
   const renderPatternGame = () => {
@@ -1433,6 +1660,8 @@ const BrainGames = () => {
                         else if (game.id === "math") startMathGame();
                         else if (game.id === "word") startWordGame();
                         else if (game.id === "pattern") startPatternGame();
+                        else if (game.id === "reaction") startReactionGame();
+                        else if (game.id === "simon") startSimonGame();
                       }
                     }}
                     onClick={() => {
@@ -1440,6 +1669,8 @@ const BrainGames = () => {
                       else if (game.id === "math") startMathGame();
                       else if (game.id === "word") startWordGame();
                       else if (game.id === "pattern") startPatternGame();
+                      else if (game.id === "reaction") startReactionGame();
+                      else if (game.id === "simon") startSimonGame();
                     }}
                   >
                     <div
@@ -1996,6 +2227,219 @@ const BrainGames = () => {
               </Card>
             ) : activeGame === "pattern" ? (
               renderPatternGame()
+            ) : activeGame === "reaction" ? (
+              // ── Reaction Test ──
+              reactionState === "results" ? (
+                <Card className="border-2 border-primary/20 shadow-2xl overflow-hidden rounded-[2.5rem]">
+                  <CardHeader className="bg-gradient-to-br from-rose-500/5 to-red-500/5 border-b border-primary/10 py-10">
+                    <CardTitle className="text-center text-4xl font-black flex flex-col items-center gap-4">
+                      <div className="p-4 bg-rose-400/20 rounded-full animate-bounce">
+                        <Gauge className="w-12 h-12 text-rose-500" />
+                      </div>
+                      Test Complete!
+                    </CardTitle>
+                    <CardDescription className="text-center text-xl font-medium">
+                      Here's how your reflexes stacked up
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-8 p-6 sm:p-10 text-center">
+                    <div className="relative p-6 sm:p-10 bg-gradient-to-br from-rose-500/10 via-red-500/5 to-background rounded-[2rem] sm:rounded-[3rem] border border-primary/20 shadow-xl">
+                      <p className="text-4xl sm:text-6xl font-black mb-2 tracking-tight">
+                        {Math.round(
+                          reactionTimes.reduce((a, b) => a + b, 0) / reactionTimes.length
+                        )}
+                        <span className="text-lg sm:text-2xl text-muted-foreground font-normal ml-2">
+                          ms avg
+                        </span>
+                      </p>
+                      <p className="text-muted-foreground font-medium uppercase tracking-widest text-[10px] sm:text-sm mb-6">
+                        Average Reaction Time
+                      </p>
+                      <div className="flex flex-wrap justify-center gap-2 sm:gap-3">
+                        {reactionTimes.map((t, i) => (
+                          <div
+                            key={i}
+                            className="px-3 py-2 sm:px-4 sm:py-3 bg-background/60 border border-border/50 rounded-xl sm:rounded-2xl font-bold text-sm sm:text-base"
+                          >
+                            R{i + 1}: {t}ms
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 max-w-md mx-auto">
+                      <Button
+                        onClick={resetReactionGame}
+                        size="lg"
+                        className="flex-1 rounded-xl sm:rounded-2xl h-12 sm:h-14 font-bold shadow-lg hover:shadow-primary/20 transition-all"
+                      >
+                        <RefreshCw className="w-4 h-4 sm:w-5 sm:h-5 mr-2" /> Play Again
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => setActiveGame(null)}
+                        size="lg"
+                        className="flex-1 rounded-xl sm:rounded-2xl h-12 sm:h-14 font-bold border-2"
+                      >
+                        Back to Center
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card className="border-2 border-primary/10 shadow-2xl overflow-hidden rounded-[2.5rem]">
+                  <CardHeader className="bg-muted/30 border-b border-border/50 pb-6 sm:pb-8 p-4 sm:p-8">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                      <div className="space-y-2">
+                        <CardTitle className="text-3xl font-black tracking-tight">
+                          Quick Reaction
+                        </CardTitle>
+                        <CardDescription className="text-base font-bold text-primary">
+                          Click the box the instant it turns green
+                        </CardDescription>
+                      </div>
+                      <div className="flex flex-wrap gap-3">
+                        <div className="flex items-center gap-3 bg-primary/10 border border-primary/20 px-4 py-2 sm:px-6 sm:py-3 rounded-xl sm:rounded-2xl">
+                          <Trophy className="w-5 h-5 text-primary" />
+                          <span className="text-lg sm:text-xl font-black text-primary">
+                            {reactionRound} / {REACTION_ROUNDS}
+                          </span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          onClick={() => setActiveGame(null)}
+                          className="h-10 sm:h-12 px-4 sm:px-6 rounded-xl sm:rounded-2xl font-bold text-muted-foreground hover:text-destructive"
+                        >
+                          Exit
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-4 sm:p-10 md:p-16">
+                    <button
+                      type="button"
+                      aria-label="Reaction test zone"
+                      onClick={handleReactionZoneClick}
+                      className={`w-full h-64 sm:h-80 rounded-[2rem] sm:rounded-[3rem] flex flex-col items-center justify-center gap-4 font-black text-2xl sm:text-4xl text-white shadow-xl transition-colors duration-150 ${
+                        reactionState === "waiting"
+                          ? "bg-gradient-to-br from-slate-500 to-slate-700"
+                          : reactionState === "ready"
+                            ? "bg-gradient-to-br from-green-500 to-emerald-600"
+                            : reactionState === "tooEarly"
+                              ? "bg-gradient-to-br from-red-500 to-rose-600"
+                              : "bg-gradient-to-br from-rose-500 to-red-600"
+                      }`}
+                    >
+                      <MousePointerClick className="w-10 h-10 sm:w-14 sm:h-14" />
+                      {reactionState === "waiting" && "Wait for it..."}
+                      {reactionState === "ready" && "CLICK NOW!"}
+                      {reactionState === "tooEarly" && "Too Early — Click to Retry"}
+                    </button>
+                    <p className="text-center text-muted-foreground font-medium mt-6">
+                      Round {reactionRound + (reactionState === "results" ? 0 : 1)} of{" "}
+                      {REACTION_ROUNDS}
+                    </p>
+                  </CardContent>
+                </Card>
+              )
+            ) : activeGame === "simon" ? (
+              // ── Simon Says ──
+              simonState === "gameover" ? (
+                <Card className="border-2 border-primary/20 shadow-2xl overflow-hidden rounded-[2.5rem]">
+                  <CardHeader className="bg-gradient-to-br from-indigo-500/5 to-violet-500/5 border-b border-primary/10 py-10">
+                    <CardTitle className="text-center text-4xl font-black flex flex-col items-center gap-4">
+                      <div className="p-4 bg-indigo-400/20 rounded-full animate-bounce">
+                        <Repeat className="w-12 h-12 text-indigo-500" />
+                      </div>
+                      Sequence Broken!
+                    </CardTitle>
+                    <CardDescription className="text-center text-xl font-medium">
+                      You made it to round {simonSequence.length}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-8 p-6 sm:p-10 text-center">
+                    <div className="relative p-6 sm:p-10 bg-gradient-to-br from-indigo-500/10 via-violet-500/5 to-background rounded-[2rem] sm:rounded-[3rem] border border-primary/20 shadow-xl">
+                      <p className="text-4xl sm:text-6xl font-black mb-2 tracking-tight">
+                        {simonSequence.length}
+                      </p>
+                      <p className="text-muted-foreground font-medium uppercase tracking-widest text-[10px] sm:text-sm">
+                        Rounds Completed
+                      </p>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 max-w-md mx-auto">
+                      <Button
+                        onClick={resetSimonGame}
+                        size="lg"
+                        className="flex-1 rounded-xl sm:rounded-2xl h-12 sm:h-14 font-bold shadow-lg hover:shadow-primary/20 transition-all"
+                      >
+                        <RefreshCw className="w-4 h-4 sm:w-5 sm:h-5 mr-2" /> Play Again
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => setActiveGame(null)}
+                        size="lg"
+                        className="flex-1 rounded-xl sm:rounded-2xl h-12 sm:h-14 font-bold border-2"
+                      >
+                        Back to Center
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card className="border-2 border-primary/10 shadow-2xl overflow-hidden rounded-[2.5rem]">
+                  <CardHeader className="bg-muted/30 border-b border-border/50 pb-6 sm:pb-8 p-4 sm:p-8">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                      <div className="space-y-2">
+                        <CardTitle className="text-3xl font-black tracking-tight">
+                          Simon Says
+                        </CardTitle>
+                        <CardDescription className="text-base font-bold text-primary">
+                          {simonState === "showing"
+                            ? "Watch closely..."
+                            : "Repeat the sequence in order"}
+                        </CardDescription>
+                      </div>
+                      <div className="flex flex-wrap gap-3">
+                        <div className="flex items-center gap-3 bg-primary/10 border border-primary/20 px-4 py-2 sm:px-6 sm:py-3 rounded-xl sm:rounded-2xl">
+                          <Trophy className="w-5 h-5 text-primary" />
+                          <span className="text-lg sm:text-xl font-black text-primary">
+                            Round {simonSequence.length}
+                          </span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          onClick={() => setActiveGame(null)}
+                          className="h-10 sm:h-12 px-4 sm:px-6 rounded-xl sm:rounded-2xl font-bold text-muted-foreground hover:text-destructive"
+                        >
+                          Exit
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-4 sm:p-10 md:p-16">
+                    <div className="grid grid-cols-2 gap-4 sm:gap-6 max-w-md mx-auto">
+                      {SIMON_COLORS.map((color, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          aria-label={`Simon color ${color.label}`}
+                          disabled={simonState !== "input"}
+                          onClick={() => handleSimonColorClick(idx)}
+                          className={`h-28 sm:h-36 rounded-2xl sm:rounded-[2rem] shadow-lg transition-all duration-150 border-4 border-white/10 ${
+                            simonActiveIndex === idx ? color.active : color.bg
+                          } ${simonState === "input" ? "hover:scale-[1.03] active:scale-95 cursor-pointer" : "opacity-90 cursor-default"}`}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-center text-muted-foreground font-medium mt-8">
+                      {simonState === "showing"
+                        ? "Memorize the flashing order"
+                        : simonState === "input"
+                          ? `Your turn — click ${simonSequence.length} color${simonSequence.length > 1 ? "s" : ""} in order`
+                          : "Get ready..."}
+                    </p>
+                  </CardContent>
+                </Card>
+              )
             ) : null}
           </motion.div>
         )}
